@@ -1,0 +1,92 @@
+[package]
+name = "armadillo"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+description = "Armadillo — a blazing-fast macOS antivirus CLI + TUI (defense-in-depth: YARA + hashes + heuristics + persistence audit)"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["antivirus", "security", "macos", "malware", "yara"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "armadillo"
+path = "src/main.rs"
+
+[dependencies]
+# --- detection engines ---
+yara-x = "1.17"                                  # pure-Rust YARA (VirusTotal) — pattern engine
+sha2 = "0.10"                                    # SHA-256 for signature/IOC matching
+md-5 = "0.10"                                    # MD5 for legacy hash feeds (ClamAV/abuse.ch)
+goblin = "0.9"                                   # zero-copy Mach-O parsing (load cmds, sections)
+memmap2 = "0.9"                                  # zero-copy mmap of scan targets
+infer = "0.16"                                   # fast magic-number file-type gating
+regex = "1"                                      # script/obfuscation heuristics
+
+# --- traversal & parallelism ---
+ignore = "0.4"                                   # parallel, gitignore-aware walker (ripgrep)
+walkdir = "2"                                    # simple single-threaded fallback
+rayon = "1.10"                                   # data-parallel per-file scanning
+crossbeam-channel = "0.5"                        # ScanEvent stream + TUI select!
+
+# --- macOS specifics ---
+plist = "1"                                      # parse LaunchAgent/Daemon + profile plists
+xattr = "1"                                      # read com.apple.quarantine & hidden-payload xattrs
+
+# --- plain deps ---
+serde_json = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-appender = "0.2"
+dirs = "5"
+owo-colors = "4"
+tempfile = "3"
+
+[dependencies.clap]
+version = "4.5"
+features = ["derive"]
+
+[dependencies.ratatui]
+version = "0.30"                                 # TUI (immediate-mode); re-exports crossterm
+
+[dependencies.indicatif]
+version = "0.17"                                 # CLI progress bars/spinners
+
+[dependencies.reqwest]
+version = "0.12"
+default-features = false
+features = ["rustls-tls", "blocking", "gzip"]    # pure-rustls definition downloads
+
+[dependencies.serde]
+version = "1"
+features = ["derive"]
+
+[dependencies.tracing-subscriber]
+version = "0.3"
+features = ["env-filter", "fmt"]
+
+[dependencies.uuid]
+version = "1"
+features = ["v4"]
+
+[dependencies.chrono]
+version = "0.4"
+default-features = false
+features = ["clock", "serde"]
+
+[dependencies.flate2]
+version = "1"
+
+[dependencies.tar]
+version = "0.4"
+
+[dev-dependencies]
+assert_fs = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[profile.dev]
+opt-level = 1            # keep yara-x/wasmtime tolerable while iterating

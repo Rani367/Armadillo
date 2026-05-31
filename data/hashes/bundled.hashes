@@ -1,0 +1,16 @@
+# Armadillo bundled known-malware hash list (starter seed).
+#
+# Format: one entry per line. Each line may be:
+#   - a bare hex digest (MD5=32, SHA-1=40, SHA-256=64 hex chars), or
+#   - ClamAV hash-signature form  `hash:size:name`, or
+#   - a CSV row whose first field is the hash (MalwareBazaar export).
+# Lines beginning with `#` are comments.
+#
+# Real coverage is meant to come from `armadillo update` (abuse.ch / URLhaus
+# open exports). This seed exists so the hash engine works offline on day one
+# and so the EICAR self-test is caught by the hash path as well as YARA.
+
+# EICAR Standard Anti-Virus Test File (harmless industry self-test) — SHA-256:
+275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f:68:Eicar-Test-Signature
+# EICAR — MD5:
+44d88612fea8a8f36de82e1278abb02f:68:Eicar-Test-Signature-MD5
