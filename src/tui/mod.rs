@@ -1,26 +1,56 @@
-//! Interactive TUI dashboard. Wires a background quick-scan and the macOS audit
-//! to a ratatui front-end via the same `ScanEvent` channel + `Counters` the CLI
-//! uses. Input, scan events, and a redraw tick are multiplexed with
-//! `crossbeam_channel::select!`.
+//! Interactive TUI dashboard.
+//!
+//! Wires a background quick-scan and the macOS audit to a ratatui front-end via
+//! the same `ScanEvent` channel + `Counters` the CLI uses. Input, scan events,
+//! ticks, and 60fps render frames are multiplexed by an async `EventBus`
+//! (tokio) running inside a runtime owned by [`run`] — so the public entry stays
+//! synchronous and the rest of the CLI is untouched.
+//!
+//! The look and animations mirror the `lazycargo` TUI: animated big-text logo,
+//! pill tabs, boot/panel-switch effects, and a theme system. Unlike lazycargo,
+//! this TUI is fully mouse-interactive (click tabs/rows/buttons, scroll wheel).
 
+// These modules are a reusable UI kit ported from lazycargo; not every helper,
+// icon glyph, theme field, or effect builder is exercised by Armadillo yet.
+#[allow(dead_code)]
+mod anim;
 mod app;
-mod ui;
+mod components;
+#[allow(dead_code)]
+mod event;
+#[allow(dead_code)]
+mod gradient;
+#[allow(dead_code)]
+mod icons;
+#[allow(dead_code)]
+mod theme;
+#[allow(dead_code)]
+mod widgets;
 
+use std::io::Stdout;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Result;
-use crossbeam_channel::{select, tick, unbounded};
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossbeam_channel::unbounded;
+use crossterm::{
+    event::{DisableMouseCapture, EnableMouseCapture},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use ratatui::{backend::CrosstermBackend, Terminal};
 
-use app::{App, Tab};
+use app::App;
+use theme::Theme;
 
 use crate::engine::ScanEngine;
 use crate::macos;
 use crate::quarantine;
 use crate::scan::progress::{Counters, ScanEvent};
 use crate::scan::{self, targets, ScanRequest};
+
+/// The concrete terminal type used throughout the TUI.
+pub type Tui = Terminal<CrosstermBackend<Stdout>>;
 
 pub fn run(engine: Arc<ScanEngine>) -> Result<()> {
     use std::io::IsTerminal;
@@ -35,7 +65,7 @@ pub fn run(engine: Arc<ScanEngine>) -> Result<()> {
     let cancel = Arc::new(AtomicBool::new(false));
     let (tx, scan_rx) = unbounded::<ScanEvent>();
 
-    // Background quick scan.
+    // Background quick scan (rayon) streaming ScanEvents over a crossbeam channel.
     {
         let engine = engine.clone();
         let counters = counters.clone();
@@ -46,79 +76,47 @@ pub fn run(engine: Arc<ScanEngine>) -> Result<()> {
         });
     }
 
-    // Run the (fast) macOS audit up front.
+    // Run the (fast) macOS audit and load the quarantine vault up front.
     let audit = macos::run_audit();
     let quarantined = quarantine::list().unwrap_or_default();
-    let mut app = App::new(counters, audit, quarantined);
+    let theme = Theme::for_name("default");
 
-    // Dedicated input thread feeding a channel (so we can select! over it).
-    let (input_tx, input_rx) = unbounded::<Event>();
-    std::thread::spawn(move || loop {
-        match event::poll(Duration::from_millis(200)) {
-            Ok(true) => {
-                if let Ok(ev) = event::read() {
-                    if input_tx.send(ev).is_err() {
-                        break;
-                    }
-                }
-            }
-            Ok(false) => {}
-            Err(_) => break,
-        }
+    // Own a tokio runtime locally so `run` stays callable from the sync CLI.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let result = rt.block_on(async move {
+        let mut terminal = init_terminal()?;
+        let app = App::new(theme, counters, audit, quarantined);
+        let res = app.run(&mut terminal, scan_rx).await;
+        let _ = restore_terminal();
+        res
     });
 
-    let ticker = tick(Duration::from_millis(100));
-    let mut terminal = ratatui::init();
-
-    let result = run_loop(&mut terminal, &mut app, &scan_rx, &input_rx, &ticker);
-
-    cancel.store(true, Ordering::Relaxed);
-    ratatui::restore();
+    cancel.store(true, Ordering::Relaxed); // stop the rayon scan
     result
 }
 
-fn run_loop(
-    terminal: &mut ratatui::DefaultTerminal,
-    app: &mut App,
-    scan_rx: &crossbeam_channel::Receiver<ScanEvent>,
-    input_rx: &crossbeam_channel::Receiver<Event>,
-    ticker: &crossbeam_channel::Receiver<std::time::Instant>,
-) -> Result<()> {
-    while !app.should_quit {
-        terminal.draw(|f| ui::draw(f, app))?;
-        select! {
-            recv(scan_rx) -> msg => if let Ok(ev) = msg { app.on_scan_event(ev); },
-            recv(input_rx) -> ev => if let Ok(ev) = ev { handle_input(app, ev); },
-            recv(ticker) -> _ => app.on_tick(),
-        }
-    }
+fn init_terminal() -> Result<Tui> {
+    let mut stdout = std::io::stdout();
+    enable_raw_mode()?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stdout);
+    let terminal = Terminal::new(backend)?;
+    install_panic_hook();
+    Ok(terminal)
+}
+
+fn restore_terminal() -> Result<()> {
+    execute!(std::io::stdout(), LeaveAlternateScreen, DisableMouseCapture)?;
+    disable_raw_mode()?;
     Ok(())
 }
 
-fn handle_input(app: &mut App, event: Event) {
-    let Event::Key(key) = event else { return };
-    if key.kind != KeyEventKind::Press {
-        return; // ignore key-release (avoids double-firing on some platforms)
-    }
-
-    // Global quit.
-    if key.code == KeyCode::Esc
-        || (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c'))
-    {
-        app.should_quit = true;
-        return;
-    }
-
-    match key.code {
-        KeyCode::Tab => app.next_tab(),
-        KeyCode::BackTab => app.prev_tab(),
-        KeyCode::Char(c @ '1'..='5') => app.select_tab(c as usize - '1' as usize),
-        KeyCode::Down | KeyCode::Char('j') => app.move_down(),
-        KeyCode::Up | KeyCode::Char('k') => app.move_up(),
-        KeyCode::Char('q') if app.tab == Tab::Threats => app.quarantine_selected(),
-        KeyCode::Char('d') if app.tab == Tab::Threats => app.delete_selected_threat(),
-        KeyCode::Char('r') if app.tab == Tab::Quarantine => app.restore_selected(),
-        KeyCode::Char('x') if app.tab == Tab::Quarantine => app.purge_selected(),
-        _ => {}
-    }
+fn install_panic_hook() {
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = restore_terminal();
+        prev(info);
+    }));
 }

@@ -27,7 +27,19 @@ regex = "1"                                      # script/obfuscation heuristics
 ignore = "0.4"                                   # parallel, gitignore-aware walker (ripgrep)
 walkdir = "2"                                    # simple single-threaded fallback
 rayon = "1.10"                                   # data-parallel per-file scanning
-crossbeam-channel = "0.5"                        # ScanEvent stream + TUI select!
+crossbeam-channel = "0.5"                        # ScanEvent stream → TUI event bus
+
+# --- TUI chrome & animation (shared look with lazycargo) ---
+crossterm = { version = "0.29", features = ["event-stream"] } # async input stream + mouse capture (matches ratatui 0.30)
+tachyonfx = "0.22"                               # frame effects: boot intro, panel switch, confetti
+throbber-widgets-tui = "0.11"                    # scan spinner
+palette = "0.7"                                  # HSL gradients
+unicode-width = "0.2"                            # tab-pill hit-test widths
+
+# --- async runtime for the TUI event bus ---
+tokio = { version = "1", features = ["full"] }   # multi-thread runtime + intervals + mpsc
+tokio-util = "0.7"                               # CancellationToken
+futures = "0.3"                                  # EventStream adaptor
 
 # --- macOS specifics ---
 plist = "1"                                      # parse LaunchAgent/Daemon + profile plists
@@ -47,7 +59,7 @@ version = "4.5"
 features = ["derive"]
 
 [dependencies.ratatui]
-version = "0.30"                                 # TUI (immediate-mode); re-exports crossterm
+version = "0.30"                                 # TUI (immediate-mode); re-exports crossterm 0.29
 
 [dependencies.indicatif]
 version = "0.17"                                 # CLI progress bars/spinners
